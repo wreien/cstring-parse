@@ -12,22 +12,30 @@
 #include <vector>
 
 #include "constexpr_vector.hpp"
+#include "type_set.hpp"
 
 /// UTILITIES
 
 template <std::size_t N>
 struct static_string {
-  std::array<char, N> m_str {};
+  char m_str[N] {};
 
-  constexpr static_string(const char(&str)[N])
-    : m_str{ std::to_array(str) }
+  template <std::size_t... Is>
+  constexpr static_string(const char(&str)[N], std::index_sequence<Is...>)
+    : m_str{ str[Is]... }
   {}
 
-  constexpr static_string(std::string_view s) {
-    std::ranges::copy(s, m_str.begin());
+  constexpr static_string(const char(&str)[N])
+    : static_string(str, std::make_index_sequence<N>{})
+  {}
+
+  constexpr static_string(std::string_view str) {
+    std::ranges::copy(str, m_str);
   }
 
-  constexpr bool operator==(const static_string&) const noexcept = default;
+  constexpr bool operator==(const static_string& other) const noexcept {
+    return std::ranges::equal(m_str, m_str + N, other.m_str, other.m_str + N);
+  }
 
   template <std::size_t M>
   constexpr bool operator==(const static_string<M>&) const noexcept {
@@ -35,7 +43,7 @@ struct static_string {
   }
 
   constexpr operator std::string_view() const noexcept {
-    return std::string_view(m_str.data(), m_str.size());
+    return std::string_view(m_str, N);
   }
 };
 
@@ -43,6 +51,7 @@ template <static_string S>
 struct parser {
   static_assert([]{ return false; }(),
                 "Unknown type encountered when parsing");
+  void operator()(std::string_view) const {}
 };
 
 template <> struct parser<"int"> {
@@ -55,13 +64,21 @@ template <> struct parser<"int"> {
 };
 
 template <> struct parser<"string"> {
-  std::optional<std::string> operator()(std::string_view arg) const {
-    return std::string(arg);
+  std::optional<std::string_view> operator()(std::string_view arg) const {
+    return { arg };
   }
 };
 
+template <auto X>
+struct constant {
+  using value_type = decltype(X);
+  static constexpr auto value = X;
+  constexpr operator value_type() const noexcept { return value; }
+  constexpr value_type operator()() const noexcept { return value; }
+};
+
 template <std::size_t I>
-using ic = std::integral_constant<std::size_t, I>;
+using ic = constant<I>;
 
 // TOKENISING
 
@@ -97,6 +114,11 @@ constexpr auto lexer() {
 
 /// ARGUMENT PARSING
 
+template <typename Lhs, typename Rhs>
+struct arg_keyfn {
+  static constexpr bool value = (Lhs::name == Rhs::name);
+};
+
 template <static_string Name, typename T>
 struct arg {
   static constexpr auto name = Name;
@@ -104,31 +126,17 @@ struct arg {
   T value;
 };
 
-template <typename... Args>
+template <typename TypeSet>
 struct parse_result {
-  std::tuple<Args...> args;
-  constexpr parse_result(std::tuple<Args...>&& args) : args(std::move(args)) {}
+  constexpr parse_result(TypeSet&& args) : args(std::move(args)) {}
 
-private:
-  template <static_string S>
-  static constexpr std::size_t indexof() {
-    constexpr auto loop = []<std::size_t I>(auto&& self, ic<I>) {
-      static_assert(I < sizeof...(Args), "arg not found");
-      if constexpr (I < sizeof...(Args)) {
-        if constexpr (std::tuple_element_t<I, std::tuple<Args...>>::name == S)
-          return I;
-        else
-          return self(self, ic<I+1>{});
-      }
-    };
-    return loop(loop, ic<0>{});
-  }
-
-public:
   template <static_string S>
   auto get() const {
-    return std::get<parse_result::indexof<S>()>(args).value;
+    constexpr auto name = S;
+    return args.template get<arg<name, std::nullptr_t>>().value;
   }
+
+  TypeSet args;
 };
 
 template <static_string Type, static_string Name>
@@ -137,7 +145,8 @@ struct positional_arg {
   static constexpr auto type = Type;
   auto parse(std::string_view s) const {
     using parse_type = decltype(parser<type>{}(s));
-    return arg<name, parse_type>{ parser<type>()(s) };
+    if constexpr (not std::is_void_v<parse_type>)
+      return arg<name, parse_type>{ parser<type>()(s) };
   }
 };
 
@@ -148,16 +157,24 @@ struct arg_parser {
 
   auto operator()(int argc, char** argv) const {
     auto parse = [&](auto&& handler, int argno) {
-      if (argno >= argc)
-        return decltype(handler.parse(argv[0])){};
-      return handler.parse(argv[argno]);
+      using ret = decltype(handler.parse(argv[argno]));
+      if constexpr (not std::is_void_v<ret>) {
+        if (argno >= argc)
+          return handler.parse(argv[argc]); // guaranteed nullptr
+        return handler.parse(argv[argno]);
+      }
     };
 
-    auto pos_parse = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-      return std::tuple{ parse(std::get<Is>(args), Is + 1)... };
+    auto parse_loop = [&]<std::size_t I>(auto&& self, auto&& result, ic<I>) {
+      if constexpr (I == sizeof...(Args))
+        return std::move(result);
+      else {
+        auto x = parse(std::get<I>(args), I + 1);
+        return self(self, std::move(result).insert(x), ic<I + 1>{});
+      }
     };
 
-    return parse_result{ pos_parse(std::index_sequence_for<Args...>{}) };
+    return parse_result{ parse_loop(parse_loop, type_set<arg_keyfn>{}, ic<0>{}) };
   }
 };
 
@@ -165,7 +182,7 @@ struct arg_parser {
 /// STRING TO ARGUMENT PARSER
 
 template <static_string str>
-constexpr auto operator ""_parse() {
+inline constexpr auto make_parser = []{
   using namespace std::literals;
 
   constexpr auto tokens = lexer<str>();
@@ -183,6 +200,11 @@ constexpr auto operator ""_parse() {
   };
 
   return make(std::make_index_sequence<tokens.size()>{});
+}();
+
+template <static_string str>
+constexpr auto operator ""_parse() {
+  return make_parser<str>;
 }
 
 int main(int argc, char** argv) {
