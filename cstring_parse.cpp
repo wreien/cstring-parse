@@ -1,51 +1,18 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
-#include <concepts>
 #include <iostream>
-#include <memory>
 #include <optional>
-#include <sstream>
 #include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 #include "constexpr_vector.hpp"
+#include "static_string.hpp"
 #include "type_set.hpp"
 
 /// UTILITIES
-
-template <std::size_t N>
-struct static_string {
-  char m_str[N] {};
-
-  template <std::size_t... Is>
-  constexpr static_string(const char(&str)[N], std::index_sequence<Is...>)
-    : m_str{ str[Is]... }
-  {}
-
-  constexpr static_string(const char(&str)[N])
-    : static_string(str, std::make_index_sequence<N>{})
-  {}
-
-  constexpr static_string(std::string_view str) {
-    std::ranges::copy(str, m_str);
-  }
-
-  constexpr bool operator==(const static_string& other) const noexcept {
-    return std::ranges::equal(m_str, m_str + N, other.m_str, other.m_str + N);
-  }
-
-  template <std::size_t M>
-  constexpr bool operator==(const static_string<M>&) const noexcept {
-    return false;
-  }
-
-  constexpr operator std::string_view() const noexcept {
-    return std::string_view(m_str, N);
-  }
-};
 
 template <static_string S>
 struct parser {
