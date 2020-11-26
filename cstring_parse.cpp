@@ -53,6 +53,10 @@ constexpr bool is_whitespace(char c) noexcept {
   return c == ' ' or c == '\t' or c == '\n' or c == '\0';
 }
 
+constexpr char to_upper(char c) noexcept {
+  return c >= 'a' and c <= 'z' ? c - 'a' + 'A' : c;
+}
+
 template <bool get_values, std::size_t N = 0>
 constexpr auto lexer_impl(std::string_view str) {
   constexpr_vector<std::string_view> results;
@@ -74,23 +78,30 @@ constexpr auto lexer_impl(std::string_view str) {
 
 template <static_string str>
 constexpr auto lexer() {
-  constexpr auto num_tokens = lexer_impl<false>(str);
-  return lexer_impl<true, num_tokens>(str);
+  using namespace std::literals;
+  constexpr auto found = std::ranges::search(str, "USAGE:"sv, {}, to_upper);
+  constexpr auto real_str = std::string_view{ str }.substr(
+    found.empty() ? 0 : std::ranges::distance(str.begin(), found.end()));
+
+  constexpr auto num_tokens = lexer_impl<false>(real_str);
+  constexpr auto results = lexer_impl<true, num_tokens>(real_str);
+
+  return results;
 }
 
 
 /// ARGUMENT PARSING
-
-template <typename Lhs, typename Rhs>
-struct arg_keyfn {
-  static constexpr bool value = (Lhs::name == Rhs::name);
-};
 
 template <static_string Name, typename T>
 struct arg {
   static constexpr auto name = Name;
   using type = T;
   T value;
+};
+
+template <typename Lhs, typename Rhs>
+struct arg_keyfn {
+  static constexpr bool value = (Lhs::name == Rhs::name);
 };
 
 template <typename TypeSet>
@@ -157,7 +168,7 @@ inline constexpr auto make_parser = []{
     constexpr auto delim = tokens[I].find(':');
     constexpr auto name_sv = tokens[I].substr(0, delim);
     constexpr auto name = static_string<name_sv.size() + 1>(name_sv);
-    constexpr auto type_sv = tokens[I].substr(delim+1);
+    constexpr auto type_sv = tokens[I].substr(delim + 1);
     constexpr auto type = static_string<type_sv.size() + 1>(type_sv);
     return positional_arg<type, name>{};
   };
@@ -175,9 +186,20 @@ constexpr auto operator ""_parse() {
 }
 
 int main(int argc, char** argv) {
+  constexpr auto parser = R"xyz(
+A demo application for my dodgy argparse generator.
+
+Usage:
+  infile:string count:int outfile:string
+
+)xyz"_parse;
+
   std::cout << "parsing args:\n";
-  auto result = "c:string a:int b:string"_parse(argc, argv);
-  if (auto a = result.get<"a">()) std::cout << "  a = " << *a << '\n';
-  if (auto b = result.get<"b">()) std::cout << "  b = " << *b << '\n';
-  if (auto c = result.get<"c">()) std::cout << "  c = " << *c << '\n';
+  auto result = parser(argc, argv);
+  if (auto inf = result.get<"infile">())
+    std::cout << "  a = " << *inf << '\n';
+  if (auto cnt = result.get<"count">())
+    std::cout << "  b = " << *cnt << '\n';
+  if (auto out = result.get<"outfile">())
+    std::cout << "  c = " << *out << '\n';
 }
