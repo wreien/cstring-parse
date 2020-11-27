@@ -11,12 +11,13 @@ template <template <typename, typename> typename IsEqual, typename... Args>
 class type_set {
 public:
   constexpr type_set() = default;
+
+private:
+  constexpr type_set(std::tuple<Args...>&& data) : m_data(std::move(data)) {}
+
   template <template <typename, typename> typename, typename...>
   friend class type_set;
 
-private:
-
-  constexpr type_set(std::tuple<Args...>&& data) : m_data(std::move(data)) {}
   std::tuple<Args...> m_data;
 
   template <std::size_t I>

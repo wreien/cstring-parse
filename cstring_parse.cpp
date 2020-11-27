@@ -118,11 +118,8 @@ struct parse_result {
 };
 
 template <typename PArgs, typename FArgs, typename KArgs>
-struct arg_parser {
-  PArgs positional;
-  FArgs flags;
-  KArgs keys;
-
+class arg_parser {
+public:
   constexpr arg_parser(PArgs&& positional, FArgs&& flags, KArgs&& keys)
     : positional(std::move(positional))
     , flags(std::move(flags))
@@ -130,25 +127,24 @@ struct arg_parser {
   {}
 
   auto operator()(int argc, char** argv) const {
-    auto parse = [&](auto&& handler, int argno) {
-      using ret = decltype(handler.parse(argv[argno]));
-      if constexpr (not std::is_void_v<ret>) {
-        if (argno >= argc)
-          return handler.parse(argv[argc]); // guaranteed nullptr
-        return handler.parse(argv[argno]);
-      }
-    };
+    return parse_result{ parse_arg<0>(type_set<arg_keyfn>{}, argc, argv) };
+  }
 
-    auto parse_loop = [&]<std::size_t P>(auto&& self, auto&& result, ic<P>) {
-      if constexpr (P == std::tuple_size_v<PArgs>)
-        return std::move(result);
-      else {
-        auto x = parse(std::get<P>(positional), P + 1);
-        return self(self, std::move(result).insert(x), ic<P + 1>{});
-      }
-    };
+private:
+  PArgs positional;
+  FArgs flags;
+  KArgs keys;
 
-    return parse_result{ parse_loop(parse_loop, type_set<arg_keyfn>{}, ic<0>{}) };
+  template <std::size_t P>
+  constexpr auto parse_arg(auto&& result, int argc, char** argv) const {
+    auto argno = std::min(argc, static_cast<int>(P + 1));
+
+    if constexpr (P == std::tuple_size_v<PArgs>)
+      return std::move(result);
+    else {
+      auto x = std::get<P>(positional).parse(argv[argno]);
+      return parse_arg<P + 1>(std::move(result).insert(x), argc, argv);
+    }
   }
 };
 
@@ -188,6 +184,14 @@ struct flag_arg {
 
 template <static_string str>
 class str_to_arg_parser {
+public:
+  constexpr str_to_arg_parser() = default;
+
+  constexpr auto operator()() const noexcept {
+    auto&& [pos, flag, key] = parse_arg<0>(std::tuple{}, std::tuple{}, std::tuple{});
+    return arg_parser{ std::move(pos), std::move(flag), std::move(key) };
+  }
+
 private:
   static constexpr auto tokens = lexer<str>();
 
@@ -220,14 +224,6 @@ private:
       auto arg = std::tuple{ positional_arg<name, type>{} };
       return parse_arg<I + 1>(std::tuple_cat(ps, arg), fs, ks);
     }
-  }
-
-public:
-  constexpr str_to_arg_parser() = default;
-
-  constexpr auto operator()() const noexcept {
-    auto&& [pos, flag, key] = parse_arg<0>(std::tuple{}, std::tuple{}, std::tuple{});
-    return arg_parser{ std::move(pos), std::move(flag), std::move(key) };
   }
 };
 
