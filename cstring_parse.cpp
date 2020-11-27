@@ -23,6 +23,8 @@ struct parser {
 
 template <> struct parser<"int"> {
   std::optional<int> operator()(std::string_view arg) const {
+    if (arg.empty())
+      return std::nullopt;
     int result;
     if (auto [p, _] = std::from_chars(arg.begin(), arg.end(), result); p == arg.end())
       return result;
@@ -32,6 +34,8 @@ template <> struct parser<"int"> {
 
 template <> struct parser<"string"> {
   std::optional<std::string_view> operator()(std::string_view arg) const {
+    if (arg.empty())
+      return std::nullopt;
     return { arg };
   }
 };
@@ -100,12 +104,19 @@ struct arg {
 };
 
 template <typename Lhs, typename Rhs>
-struct arg_keyfn {
-  static constexpr bool value = (Lhs::name == Rhs::name);
-};
+struct arg_keyfn : std::bool_constant<Lhs::name == Rhs::name> {};
+
+template <typename Lhs, typename Rhs>
+struct shortarg_keyfn :
+  std::bool_constant<Lhs::name == Rhs::name
+                  or Lhs::name == Rhs::short_name
+                  or Lhs::short_name == Rhs::name
+                  or (Lhs::short_name != "" and Lhs::short_name == Rhs::short_name)>
+{};
 
 template <typename TypeSet>
-struct parse_result {
+class parse_result {
+public:
   constexpr parse_result(TypeSet&& args) : args(std::move(args)) {}
 
   template <static_string S>
@@ -114,6 +125,7 @@ struct parse_result {
     return args.template get<arg<name, std::nullptr_t>>().value;
   }
 
+private:
   TypeSet args;
 };
 
@@ -127,7 +139,11 @@ public:
   {}
 
   auto operator()(int argc, char** argv) const {
-    return parse_result{ parse_arg<0>(type_set<arg_keyfn>{}, argc, argv) };
+    auto result = prepare_type_set();
+    auto get_arg = [argv, argc](int arg) -> std::string_view {
+      if (arg >= argc) return {}; else return argv[arg];
+    };
+    return parse_args<0>(std::move(result), 1, get_arg);
   }
 
 private:
@@ -135,15 +151,32 @@ private:
   FArgs flags;
   KArgs keys;
 
-  template <std::size_t P>
-  constexpr auto parse_arg(auto&& result, int argc, char** argv) const {
-    auto argno = std::min(argc, static_cast<int>(P + 1));
+  // creates a result type set with all values default-constructed
+  // uses a key of both short/long names
+  constexpr auto prepare_type_set() const {
+    using namespace std::literals;
 
+    constexpr auto map_flags = []<typename F>(const F&) {
+      constexpr auto name = F::name;  // work around GCC bug
+      return arg<name, bool>{};
+    };
+    constexpr auto map_keys = []<typename K>(const K&) {
+      return decltype(std::declval<K>().parse(""sv)){};
+    };
+
+    return make_type_set<shortarg_keyfn>(positional).template map<arg_keyfn>(map_keys)
+      .merge(flags.template map<arg_keyfn>(map_flags))
+      .merge(keys.template map<arg_keyfn>(map_keys));
+  }
+
+  template <std::size_t P>
+  constexpr auto parse_args(auto&& result, int argno, auto&& get_arg) const {
     if constexpr (P == std::tuple_size_v<PArgs>)
-      return std::move(result);
+      return parse_result{ std::move(result) };
     else {
-      auto x = std::get<P>(positional).parse(argv[argno]);
-      return parse_arg<P + 1>(std::move(result).insert(x), argc, argv);
+      result.template get<std::tuple_element_t<P, PArgs>>() =
+        std::get<P>(positional).parse(get_arg(argno));
+      return parse_args<P + 1>(std::move(result), argno + 1, get_arg);
     }
   }
 };
@@ -155,6 +188,7 @@ template <static_string Name, static_string Type>
 struct positional_arg {
   static constexpr auto name = Name;
   static constexpr auto type = Type;
+  static constexpr auto short_name = static_string{""};
 
   auto parse(std::string_view s) const {
     using parse_type = decltype(parser<type>{}(s));
@@ -188,7 +222,10 @@ public:
   constexpr str_to_arg_parser() = default;
 
   constexpr auto operator()() const noexcept {
-    auto&& [pos, flag, key] = parse_arg<0>(std::tuple{}, std::tuple{}, std::tuple{});
+    auto&& [pos, flag, key] = parse_arg<0>(
+      std::tuple{}, type_set<shortarg_keyfn>{}, type_set<shortarg_keyfn>{});
+    static_assert(decltype(flag.merge(key))::is_valid(),
+                  "flags and keys cannot share identifiers or short names");
     return arg_parser{ std::move(pos), std::move(flag), std::move(key) };
   }
 
@@ -211,8 +248,8 @@ private:
         // flag arg
         constexpr auto name_sv = tokens[I].substr(start);
         constexpr auto name = static_string<name_sv.size() + 1>(name_sv);
-        auto arg = std::tuple{ flag_arg<name, static_string{""}>{} };
-        return parse_arg<I + 1>(ps, std::tuple_cat(fs, arg), ks);
+        auto arg = flag_arg<name, static_string{""}>{};
+        return parse_arg<I + 1>(ps, std::move(fs).insert(arg), ks);
       }
     } else {
       // positional arg
