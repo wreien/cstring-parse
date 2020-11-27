@@ -117,21 +117,17 @@ struct parse_result {
   TypeSet args;
 };
 
-template <static_string Type, static_string Name>
-struct positional_arg {
-  static constexpr auto name = Name;
-  static constexpr auto type = Type;
-  auto parse(std::string_view s) const {
-    using parse_type = decltype(parser<type>{}(s));
-    if constexpr (not std::is_void_v<parse_type>)
-      return arg<name, parse_type>{ parser<type>()(s) };
-  }
-};
-
-template <typename... Args>
+template <typename PArgs, typename FArgs, typename KArgs>
 struct arg_parser {
-  std::tuple<Args...> args;
-  constexpr arg_parser(std::tuple<Args...>&& args) : args(std::move(args)) {}
+  PArgs positional;
+  FArgs flags;
+  KArgs keys;
+
+  constexpr arg_parser(PArgs&& positional, FArgs&& flags, KArgs&& keys)
+    : positional(std::move(positional))
+    , flags(std::move(flags))
+    , keys(std::move(keys))
+  {}
 
   auto operator()(int argc, char** argv) const {
     auto parse = [&](auto&& handler, int argno) {
@@ -143,12 +139,12 @@ struct arg_parser {
       }
     };
 
-    auto parse_loop = [&]<std::size_t I>(auto&& self, auto&& result, ic<I>) {
-      if constexpr (I == sizeof...(Args))
+    auto parse_loop = [&]<std::size_t P>(auto&& self, auto&& result, ic<P>) {
+      if constexpr (P == std::tuple_size_v<PArgs>)
         return std::move(result);
       else {
-        auto x = parse(std::get<I>(args), I + 1);
-        return self(self, std::move(result).insert(x), ic<I + 1>{});
+        auto x = parse(std::get<P>(positional), P + 1);
+        return self(self, std::move(result).insert(x), ic<P + 1>{});
       }
     };
 
@@ -159,30 +155,86 @@ struct arg_parser {
 
 /// STRING TO ARGUMENT PARSER
 
+template <static_string Name, static_string Type>
+struct positional_arg {
+  static constexpr auto name = Name;
+  static constexpr auto type = Type;
+
+  auto parse(std::string_view s) const {
+    using parse_type = decltype(parser<type>{}(s));
+    if constexpr (not std::is_void_v<parse_type>)
+      return arg<name, parse_type>{ parser<type>{}(s) };
+  }
+};
+
+template <static_string Name, static_string ShortName, static_string Type>
+struct key_arg {
+  static constexpr auto name = Name;
+  static constexpr auto type = Type;
+  static constexpr auto short_name = ShortName;
+
+  auto parse(std::string_view s) const {
+    using parse_type = decltype(parser<type>{}(s));
+    if constexpr (not std::is_void_v<parse_type>)
+      return arg<name, parse_type>{ parser<type>{}(s) };
+  }
+};
+
+template <static_string Name, static_string ShortName>
+struct flag_arg {
+  static constexpr auto name = Name;
+  static constexpr auto short_name = ShortName;
+};
+
 template <static_string str>
-inline constexpr auto make_parser = []{
-  using namespace std::literals;
+class str_to_arg_parser {
+private:
+  static constexpr auto tokens = lexer<str>();
 
-  constexpr auto tokens = lexer<str>();
-  constexpr auto str_to_arg = [tokens]<std::size_t I>(ic<I>) {
-    constexpr auto delim = tokens[I].find(':');
-    constexpr auto name_sv = tokens[I].substr(0, delim);
-    constexpr auto name = static_string<name_sv.size() + 1>(name_sv);
-    constexpr auto type_sv = tokens[I].substr(delim + 1);
-    constexpr auto type = static_string<type_sv.size() + 1>(type_sv);
-    return positional_arg<type, name>{};
-  };
+  template <std::size_t I>
+  constexpr auto parse_arg(auto&& ps, auto&& fs, auto&& ks) const noexcept {
+    using namespace std::literals;
 
-  constexpr auto make = [str_to_arg]<std::size_t... Is>(std::index_sequence<Is...>) {
-    return arg_parser{ std::tuple{ str_to_arg(ic<Is>{})... }};
-  };
+    if constexpr (I == tokens.size()) {
+      return std::tuple{ ps, fs, ks };
+    } else if constexpr (tokens[I].starts_with("--"sv)) {
+      constexpr auto start = 2;
+      constexpr auto npos = std::string_view::npos;
+      if constexpr (constexpr auto equals = tokens[I].find('='); equals != npos) {
+        // key
+        static_assert(equals != npos, "not yet implemented");
+      } else {
+        // flag arg
+        constexpr auto name_sv = tokens[I].substr(start);
+        constexpr auto name = static_string<name_sv.size() + 1>(name_sv);
+        auto arg = std::tuple{ flag_arg<name, static_string{""}>{} };
+        return parse_arg<I + 1>(ps, std::tuple_cat(fs, arg), ks);
+      }
+    } else {
+      // positional arg
+      constexpr auto delim = tokens[I].find(':');
+      constexpr auto name_sv = tokens[I].substr(0, delim);
+      constexpr auto name = static_string<name_sv.size() + 1>(name_sv);
+      constexpr auto type_sv = tokens[I].substr(delim + 1);
+      constexpr auto type = static_string<type_sv.size() + 1>(type_sv);
+      auto arg = std::tuple{ positional_arg<name, type>{} };
+      return parse_arg<I + 1>(std::tuple_cat(ps, arg), fs, ks);
+    }
+  }
 
-  return make(std::make_index_sequence<tokens.size()>{});
-}();
+public:
+  constexpr str_to_arg_parser() = default;
+
+  constexpr auto operator()() const noexcept {
+    auto&& [pos, flag, key] = parse_arg<0>(std::tuple{}, std::tuple{}, std::tuple{});
+    return arg_parser{ std::move(pos), std::move(flag), std::move(key) };
+  }
+};
 
 template <static_string str>
 constexpr auto operator ""_parse() {
-  return make_parser<str>;
+  constexpr auto real_str = str;  // avoid GCC bug
+  return str_to_arg_parser<real_str>{}();
 }
 
 int main(int argc, char** argv) {
@@ -190,6 +242,7 @@ int main(int argc, char** argv) {
 A demo application for my dodgy argparse generator.
 
 Usage:
+  --flag1 --flag2
   infile:string count:int outfile:string
 
 )xyz"_parse;
