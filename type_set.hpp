@@ -2,6 +2,7 @@
 #define TYPE_MAP_HPP_INCLUDED
 
 #include <cstddef>
+#include <concepts>
 #include <functional>
 #include <type_traits>
 #include <tuple>
@@ -132,8 +133,8 @@ public:
         return false;
       } else {
         using elem_t = std::tuple_element_t<I, std::tuple<Args...>>;
-        if constexpr (std::is_invocable_v<Compare, elem_t>
-                  and std::is_invocable_v<Function, elem_t>)
+        if constexpr (std::regular_invocable<Compare, const elem_t&>
+                  and std::invocable<Function, elem_t&>)
         {
           if (std::invoke(key, std::get<I>(m_data))) {
             std::invoke(std::forward<Function>(func), std::get<I>(m_data));
@@ -160,8 +161,8 @@ public:
         return false;
       } else {
         using elem_t = std::tuple_element_t<I, std::tuple<Args...>>;
-        if constexpr (std::is_invocable_v<Compare, elem_t>
-                  and std::is_invocable_v<Function, elem_t>)
+        if constexpr (std::regular_invocable<Compare, const elem_t&>
+                  and std::invocable<Function, const elem_t&>)
         {
           if (std::invoke(key, std::get<I>(m_data))) {
             std::invoke(std::forward<Function>(func), std::get<I>(m_data));

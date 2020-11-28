@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string_view>
 #include <utility>
+#include <ostream>
 
 template <std::size_t N>
 struct static_string {
@@ -65,6 +66,10 @@ struct static_string {
   }
   constexpr const char* data() const noexcept {
     return m_str;
+  }
+
+  friend std::ostream& operator<<(std::ostream& os, const static_string& s) {
+    return os << s.m_str;
   }
 };
 

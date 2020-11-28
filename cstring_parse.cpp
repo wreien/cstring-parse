@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <concepts>
 #include <iostream>
 #include <optional>
 #include <string_view>
@@ -202,13 +203,23 @@ private:
     }
 
     void parse_longname(std::string_view arg) {
-      const auto key = [arg]<typename T>(const T&) { return T::name == arg; };
-      if (self->flags.contains(key)) {
-        result.inspect(key, [](arg_value<bool> auto&& x) { x.value = true; });
-      } else if (self->keys.contains(key)) {
-        // TODO
+      const auto equals = arg.find('=');
+      bool has_equals = equals != std::string_view::npos;
+      auto name = arg.substr(0, equals);
+
+      const auto key = [name]<typename T>(const T&) { return T::name == name; };
+      if (not has_equals and self->flags.contains(key)) {
+        result.inspect(key, [](arg_value<bool> auto& x) { x.value = true; });
       } else {
-        throw "unknown key";
+        auto value = has_equals ? arg.substr(equals + 1) : get_next_arg();
+        bool was_found = self->keys.inspect(key, [=, this](auto&& t) {
+          using V = decltype(t.parse(value));
+          result.inspect(key, [&t, value](std::same_as<V> auto& x) {
+            x = t.parse(value);
+          });
+        });
+        if (not was_found)
+          throw "unknown key";  // TODO: proper exception management
       }
     }
 
@@ -337,7 +348,12 @@ private:
       constexpr auto npos = std::string_view::npos;
       if constexpr (constexpr auto equals = tokens[I].find('='); equals != npos) {
         // key
-        static_assert(equals != npos, "not yet implemented");
+        constexpr auto name_sv = tokens[I].substr(start, equals - start);
+        constexpr auto name = static_string<name_sv.size() + 1>(name_sv);
+        constexpr auto type_sv = tokens[I].substr(equals + 1);
+        constexpr auto type = static_string<type_sv.size() + 1>(type_sv);
+        auto arg = key_arg<name, static_string{""}, type>{};
+        return parse_arg<I + 1>(ps, fs, std::move(ks).insert(arg));
       } else {
         // flag arg
         constexpr auto name_sv = tokens[I].substr(start);
@@ -365,26 +381,46 @@ constexpr auto operator ""_parse() {
 }
 
 int main(int argc, char** argv) try {
-  constexpr auto parser = R"xyz(
+  constexpr auto parser = R"(
 A demo application for my dodgy argparse generator.
 
 Usage:
   --flag1 --flag2
-  infile:string count:int outfile:string
+  --key=string --other=int
+  inf:string count:int outf:string
+)"_parse;
 
-)xyz"_parse;
-
-  std::cout << "parsing args:\n";
+  std::cout << "parsing args...\n";
   auto result = parser(argc, argv);
+
+  std::cout << "---\n";
+
+  // boolean flags
   std::cout << std::boolalpha;
   std::cout << "  flag1 = " << result.get<"flag1">() << '\n';
   std::cout << "  flag2 = " << result.get<"flag2">() << '\n';
-  if (auto inf = result.get<"infile">())
-    std::cout << "  a = " << *inf << '\n';
-  if (auto cnt = result.get<"count">())
-    std::cout << "  b = " << *cnt << '\n';
-  if (auto out = result.get<"outfile">())
-    std::cout << "  c = " << *out << '\n';
+
+  std::cout << "---\n";
+
+  // key-value flags
+  if (auto key = result.get<"key">())
+    std::cout << "  key   = " << *key << '\n';
+  if (auto other = result.get<"other">())
+    std::cout << "  other = " << *other << '\n';
+
+  std::cout << "---\n";
+
+  // positionals
+  if (auto inf = result.get<"inf">())
+    std::cout << "  inf   = " << *inf << '\n';
+  if (auto count = result.get<"count">())
+    std::cout << "  count = " << *count << '\n';
+  if (auto outf = result.get<"outf">())
+    std::cout << "  outf  = " << *outf << '\n';
+
+  std::cout << "---\n";
+
+  // leftover positionals
   std::cout << "  remainder = ";
   for (auto&& x : result.unparsed()) std::cout << x << ' ';
   std::cout << '\n';
