@@ -100,7 +100,7 @@ template <static_string Name, typename T>
 struct arg {
   static constexpr auto name = Name;
   using type = T;
-  T value;
+  T value = {};
 };
 
 template <typename Lhs, typename Rhs>
@@ -117,7 +117,9 @@ struct shortarg_keyfn :
 template <typename TypeSet>
 class parse_result {
 public:
-  constexpr parse_result(TypeSet&& args) : args(std::move(args)) {}
+  constexpr parse_result(TypeSet&& args, std::vector<std::string_view> remaining)
+    : args(std::move(args)), remaining(std::move(remaining))
+  {}
 
   template <static_string S>
   auto get() const {
@@ -125,8 +127,13 @@ public:
     return args.template get<arg<name, std::nullptr_t>>().value;
   }
 
+  decltype(auto) unparsed() const {
+    return remaining;
+  }
+
 private:
   TypeSet args;
+  std::vector<std::string_view> remaining;
 };
 
 template <typename PArgs, typename FArgs, typename KArgs>
@@ -139,11 +146,7 @@ public:
   {}
 
   auto operator()(int argc, char** argv) const {
-    auto result = prepare_type_set();
-    auto get_arg = [argv, argc](int arg) -> std::string_view {
-      if (arg >= argc) return {}; else return argv[arg];
-    };
-    return parse_args<0>(std::move(result), 1, get_arg);
+    return parser_state{ this, prepare_type_set(), argc, argv }();
   }
 
 private:
@@ -169,16 +172,96 @@ private:
       .merge(keys.template map<arg_keyfn>(map_keys));
   }
 
-  template <std::size_t P>
-  constexpr auto parse_args(auto&& result, int argno, auto&& get_arg) const {
-    if constexpr (P == std::tuple_size_v<PArgs>)
-      return parse_result{ std::move(result) };
-    else {
-      result.template get<std::tuple_element_t<P, PArgs>>() =
-        std::get<P>(positional).parse(get_arg(argno));
-      return parse_args<P + 1>(std::move(result), argno + 1, get_arg);
+  template <typename TypeSet>
+  class parser_state {
+  public:
+    parser_state(const arg_parser* self, TypeSet&& result, int argc, char** argv)
+      : self(self), result(std::move(result)), argc(argc), argv(argv)
+    {}
+
+    auto operator()() {
+      return parse_args<0>();
     }
-  }
+
+  private:
+    auto get_arg(int arg) const -> std::string_view {
+      if (arg >= argc)
+        return {};
+      else
+        return argv[arg];
+    }
+
+    auto get_current_arg() const -> std::string_view {
+      return get_arg(current_arg);
+    }
+
+    auto get_next_arg() -> std::string_view {
+      return get_arg(++current_arg);
+    }
+
+    void parse_longname(std::string_view arg) {
+      // TODO
+      (void)arg;
+    }
+
+    void parse_shortnames(std::string_view arg) {
+      // TODO
+      (void)arg;
+    }
+
+    void parse_nonpos_args() {
+      using namespace std::literals;
+
+      while (has_more_flags and current_arg < argc) {
+        // we use the flag "--" to determine the end of non-positional args
+        std::string_view arg = get_current_arg();
+        if (arg == "--"sv) {
+          has_more_flags = false;
+        } else if (arg.starts_with("--"sv)) {
+          // a single long-name argument
+          arg.remove_prefix(2);
+          parse_longname(arg);
+        } else if (arg.starts_with("-"sv)) {
+          // a short-name flag; possibly many embedded in this one argument
+          arg.remove_prefix(1);
+          parse_shortnames(arg);
+        } else {
+          // not a flag at all, we're done... for now
+          break;
+        }
+
+        ++current_arg;
+      }
+    }
+
+    template <std::size_t P>
+    auto parse_args() -> parse_result<TypeSet> {
+      parse_nonpos_args();
+      if constexpr (P < std::tuple_size_v<PArgs>) {
+        // deal with named positional args
+        result.template get<std::tuple_element_t<P, PArgs>>() =
+          std::get<P>(self->positional).parse(get_arg(current_arg++));
+        return parse_args<P + 1>();
+      } else {
+        // finished with named positional args, all other positional args
+        // should get stick in a vector as the 'leftovers'
+        std::vector<std::string_view> remaining_posargs;
+        while (current_arg < argc) {
+          remaining_posargs.push_back(get_arg(current_arg++));
+          parse_nonpos_args();
+        }
+        return parse_result{ std::move(result), std::move(remaining_posargs) };
+      }
+    }
+
+    const arg_parser* self = nullptr;
+    TypeSet result = {};
+    int argc = 0;
+    char** argv = nullptr;
+
+    bool has_more_flags = true;
+    int current_arg = 1;
+  };
 };
 
 
@@ -189,6 +272,8 @@ struct positional_arg {
   static constexpr auto name = Name;
   static constexpr auto type = Type;
   static constexpr auto short_name = static_string{""};
+
+  static_assert(short_name.size() <= 2, "short name can be maximum one character");
 
   auto parse(std::string_view s) const {
     using parse_type = decltype(parser<type>{}(s));
@@ -203,6 +288,8 @@ struct key_arg {
   static constexpr auto type = Type;
   static constexpr auto short_name = ShortName;
 
+  static_assert(short_name.size() <= 2, "short name can be maximum one character");
+
   auto parse(std::string_view s) const {
     using parse_type = decltype(parser<type>{}(s));
     if constexpr (not std::is_void_v<parse_type>)
@@ -214,6 +301,8 @@ template <static_string Name, static_string ShortName>
 struct flag_arg {
   static constexpr auto name = Name;
   static constexpr auto short_name = ShortName;
+
+  static_assert(short_name.size() <= 2, "short name can be maximum one character");
 };
 
 template <static_string str>
