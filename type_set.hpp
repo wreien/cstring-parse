@@ -9,30 +9,37 @@
 
 namespace detail {
   struct prechecked_tag {};
+
+  template <typename T, template <typename...> typename Template>
+  struct is_specialisation : std::false_type {};
+  template <template <typename...> typename Template, typename... Args>
+  struct is_specialisation<Template<Args...>, Template> : std::true_type {};
+  template <typename T, template <typename...> typename Template>
+  inline constexpr bool is_specialisation_v = is_specialisation<T, Template>::value;
 }
 
 // A type-level set, for building up a set of unique types.
 // Uses 'IsEqual' metafunction for type equality testing.
-template <template <typename, typename> typename IsEqual, typename... Args>
+template <template <typename, typename> typename IsEqual, typename Data = std::tuple<>>
 class type_set {
 public:
   constexpr type_set() = default;
-  constexpr type_set(std::tuple<Args...>&& data) : m_data(std::move(data)) {
+  constexpr type_set(Data&& data) : m_data(std::move(data)) {
     static_assert(is_valid(), "provided values do not fulfil set invariant");
   }
-  constexpr type_set(const std::tuple<Args...>& data) : m_data(data) {
+  constexpr type_set(const Data& data) : m_data(data) {
     static_assert(is_valid(), "provided values do not fulfil set invariant");
   }
 
 private:
-  constexpr type_set(detail::prechecked_tag, std::tuple<Args...>&& data)
+  constexpr type_set(detail::prechecked_tag, Data&& data)
     : m_data(std::move(data))
   {}
 
-  template <template <typename, typename> typename, typename...>
+  template <template <typename, typename> typename, typename>
   friend class type_set;
 
-  std::tuple<Args...> m_data;
+  Data m_data;
 
   template <std::size_t I>
   using ic = std::integral_constant<std::size_t, I>;
@@ -42,8 +49,8 @@ private:
   template <typename Key>
   static constexpr std::size_t indexof() {
     constexpr auto loop = []<std::size_t I>(auto&& self, ic<I>) {
-      if constexpr (I < sizeof...(Args)) {
-        using Elem = std::tuple_element_t<I, std::tuple<Args...>>;
+      if constexpr (I < std::tuple_size_v<Data>) {
+        using Elem = std::tuple_element_t<I, Data>;
         if constexpr (IsEqual<Elem, Key>::value)
           return I;
         else
@@ -59,11 +66,11 @@ public:
   // full check to ensure that the type is valid
   static constexpr bool is_valid() {
     constexpr auto loop = []<std::size_t I>(auto&& self, ic<I>) {
-      if constexpr (I + 1 < sizeof...(Args)) {
-        using Lhs = std::tuple_element_t<I, std::tuple<Args...>>;
+      if constexpr (I + 1 < std::tuple_size_v<Data>) {
+        using Lhs = std::tuple_element_t<I, Data>;
         constexpr auto inner = []<std::size_t J>(auto&& self, ic<J>) {
-          if constexpr (J < sizeof...(Args)) {
-            using Rhs = std::tuple_element_t<J, std::tuple<Args...>>;
+          if constexpr (J < std::tuple_size_v<Data>) {
+            using Rhs = std::tuple_element_t<J, Data>;
             if constexpr (IsEqual<Lhs, Rhs>::value)
               return false;
             else
@@ -87,40 +94,48 @@ public:
   constexpr decltype(auto) get() {
     constexpr auto I = indexof<Key>();
     static_assert(I != npos, "key not found");
-    if constexpr (I != npos)
-      return std::get<indexof<Key>()>(m_data);
+    if constexpr (I != npos) {
+      using std::get;
+      return get<indexof<Key>()>(m_data);
+    }
   }
 
   template <typename Key>
   constexpr decltype(auto) get() const {
     constexpr auto I = indexof<Key>();
     static_assert(I != npos, "key not found");
-    if constexpr (I != npos)
-      return std::get<indexof<Key>()>(m_data);
+    if constexpr (I != npos) {
+      using std::get;
+      return get<indexof<Key>()>(m_data);
+    }
   }
 
   template <typename T>
+    requires detail::is_specialisation_v<Data, std::tuple>
   constexpr auto insert(T&& t) && noexcept {
     using NewKey = std::remove_cvref_t<T>;
     constexpr auto I = indexof<NewKey>();
     static_assert(I == npos, "key already exists");
-    if constexpr (I == npos)
-      return type_set<IsEqual, Args..., NewKey>(detail::prechecked_tag{},
-        std::tuple_cat(std::move(m_data), std::tuple<NewKey>(std::forward<T>(t))));
-    else
+    if constexpr (I == npos) {
+      auto x = std::tuple_cat(std::move(m_data), std::tuple<NewKey>(std::forward<T>(t)));
+      return type_set<IsEqual, decltype(x)>(detail::prechecked_tag{}, std::move(x));
+    } else {
       return *this;
+    }
   }
 
   template <typename T>
+    requires detail::is_specialisation_v<Data, std::tuple>
   constexpr auto insert(T&& t) const& {
     using NewKey = std::remove_cvref_t<T>;
     constexpr auto I = indexof<NewKey>();
     static_assert(I == npos, "key already exists");
-    if constexpr (I == npos)
-      return type_set<IsEqual, Args..., NewKey>(detail::prechecked_tag{},
-        std::tuple_cat(m_data, std::tuple<NewKey>(std::forward<T>(t))));
-    else
+    if constexpr (I == npos) {
+      auto x = std::tuple_cat(m_data, std::tuple<NewKey>(std::forward<T>(t)));
+      return type_set<IsEqual, decltype(x)>(detail::prechecked_tag{}, std::move(x));
+    } else {
       return *this;
+    }
   }
 
   // Access a the first element as specified by the given `Compare`,
@@ -129,15 +144,16 @@ public:
   template <typename Compare, typename Function>
   constexpr bool inspect(Compare&& key, Function&& func) {
     auto loop = [&]<std::size_t I>(auto&& self, ic<I>) {
-      if constexpr (I == sizeof...(Args)) {
+      if constexpr (I == std::tuple_size_v<Data>) {
         return false;
       } else {
-        using elem_t = std::tuple_element_t<I, std::tuple<Args...>>;
+        using elem_t = std::tuple_element_t<I, Data>;
         if constexpr (std::regular_invocable<Compare, const elem_t&>
                   and std::invocable<Function, elem_t&>)
         {
-          if (std::invoke(key, std::get<I>(m_data))) {
-            std::invoke(std::forward<Function>(func), std::get<I>(m_data));
+          using std::get;
+          if (std::invoke(key, get<I>(m_data))) {
+            std::invoke(std::forward<Function>(func), get<I>(m_data));
             return true;
           }
         }
@@ -157,15 +173,16 @@ public:
   template <typename Compare, typename Function>
   constexpr bool cinspect(Compare&& key, Function&& func) const {
     auto loop = [&]<std::size_t I>(auto&& self, ic<I>) {
-      if constexpr (I == sizeof...(Args)) {
+      if constexpr (I == std::tuple_size_v<Data>) {
         return false;
       } else {
-        using elem_t = std::tuple_element_t<I, std::tuple<Args...>>;
+        using elem_t = std::tuple_element_t<I, Data>;
         if constexpr (std::regular_invocable<Compare, const elem_t&>
                   and std::invocable<Function, const elem_t&>)
         {
-          if (std::invoke(key, std::get<I>(m_data))) {
-            std::invoke(std::forward<Function>(func), std::get<I>(m_data));
+          using std::get;
+          if (std::invoke(key, get<I>(m_data))) {
+            std::invoke(std::forward<Function>(func), get<I>(m_data));
             return true;
           }
         }
@@ -184,8 +201,8 @@ public:
   // Convert this type set to use a different comparison function,
   // verifying that such a translation is valid
   template <template <typename, typename> typename NewIsEqual>
-  constexpr type_set<NewIsEqual, Args...> map() const {
-    static_assert(type_set<NewIsEqual, Args...>::is_valid(),
+  constexpr type_set<NewIsEqual, Data> map() const {
+    static_assert(type_set<NewIsEqual, Data>::is_valid(),
                   "new key does not maintain set invariants");
     return { detail::prechecked_tag{}, m_data };
   }
@@ -195,36 +212,27 @@ public:
   // verifying that such a translation is valid
   template <template <typename, typename> typename NewIsEqual = IsEqual,
             typename Function>
+    requires detail::is_specialisation_v<Data, std::tuple>
   constexpr auto map(Function&& mapper) const {
     auto transformed = [this, &mapper]<std::size_t... Is>(std::index_sequence<Is...>) {
       return std::tuple{ mapper(std::get<Is>(m_data))... };
     };
-    return make_type_set<NewIsEqual>(
-      transformed(std::make_index_sequence<sizeof...(Args)>{}));
+    auto values = transformed(std::make_index_sequence<std::tuple_size_v<Data>>{});
+    return type_set<NewIsEqual, decltype(values)>(values);
   }
 
   // Merge two type sets together,
   // erroring on mismatch
-  template <typename... Others>
-  constexpr auto merge(const type_set<IsEqual, Others...>& other) const
-    -> type_set<IsEqual, Args..., Others...>
-  {
-    static_assert(type_set<IsEqual, Args..., Others...>::is_valid(),
-                  "the sets share a common key");
-    return { detail::prechecked_tag{}, std::tuple_cat(m_data, other.m_data) };
+  template <typename Other>
+    requires detail::is_specialisation_v<Data, std::tuple>
+  constexpr auto merge(const type_set<IsEqual, Other>& other) const {
+    auto combined = std::tuple_cat(m_data, other.m_data);
+    using new_type = type_set<IsEqual, decltype(combined)>;
+    static_assert(new_type::is_valid(), "the sets must not share keys");
+    return new_type{ detail::prechecked_tag{}, std::move(combined) };
   }
 
   // TODO: other ref-qualifiers for map and merge
 };
-
-template <template <typename, typename> typename IsEqual, typename... Args>
-constexpr auto make_type_set(std::tuple<Args...>&& args) {
-  return type_set<IsEqual, Args...>(std::move(args));
-}
-
-template <template <typename, typename> typename IsEqual, typename... Args>
-constexpr auto make_type_set(const std::tuple<Args...>& args) {
-  return type_set<IsEqual, Args...>(args);
-}
 
 #endif // TYPE_MAP_HPP_INCLUDED

@@ -170,7 +170,7 @@ private:
       return decltype(std::declval<K>().parse(""sv)){};
     };
 
-    return make_type_set<arg_keyfn>(positional).map(map_keys)
+    return type_set<arg_keyfn, PArgs>(positional).map(map_keys)
       .merge(flags.template map<arg_keyfn>(map_flags))
       .merge(keys.template map<arg_keyfn>(map_keys));
   }
