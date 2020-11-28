@@ -114,10 +114,13 @@ struct shortarg_keyfn :
                   or (Lhs::short_name != "" and Lhs::short_name == Rhs::short_name)>
 {};
 
+template <typename Arg, typename T>
+concept arg_value = requires(Arg a, T t) { a.value = t; t = a.value; };
+
 template <typename TypeSet>
 class parse_result {
 public:
-  constexpr parse_result(TypeSet&& args, std::vector<std::string_view> remaining)
+  parse_result(TypeSet&& args, std::vector<std::string_view> remaining)
     : args(std::move(args)), remaining(std::move(remaining))
   {}
 
@@ -199,8 +202,14 @@ private:
     }
 
     void parse_longname(std::string_view arg) {
-      // TODO
-      (void)arg;
+      const auto key = [arg]<typename T>(const T&) { return T::name == arg; };
+      if (self->flags.contains(key)) {
+        result.inspect(key, [](arg_value<bool> auto&& x) { x.value = true; });
+      } else if (self->keys.contains(key)) {
+        // TODO
+      } else {
+        throw "unknown key";
+      }
     }
 
     void parse_shortnames(std::string_view arg) {
@@ -212,9 +221,9 @@ private:
       using namespace std::literals;
 
       while (has_more_flags and current_arg < argc) {
-        // we use the flag "--" to determine the end of non-positional args
         std::string_view arg = get_current_arg();
         if (arg == "--"sv) {
+          // we use the flag "--" to determine the end of non-positional args
           has_more_flags = false;
         } else if (arg.starts_with("--"sv)) {
           // a single long-name argument
@@ -355,7 +364,7 @@ constexpr auto operator ""_parse() {
   return str_to_arg_parser<real_str>{}();
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
   constexpr auto parser = R"xyz(
 A demo application for my dodgy argparse generator.
 
@@ -367,10 +376,18 @@ Usage:
 
   std::cout << "parsing args:\n";
   auto result = parser(argc, argv);
+  std::cout << std::boolalpha;
+  std::cout << "  flag1 = " << result.get<"flag1">() << '\n';
+  std::cout << "  flag2 = " << result.get<"flag2">() << '\n';
   if (auto inf = result.get<"infile">())
     std::cout << "  a = " << *inf << '\n';
   if (auto cnt = result.get<"count">())
     std::cout << "  b = " << *cnt << '\n';
   if (auto out = result.get<"outfile">())
     std::cout << "  c = " << *out << '\n';
+  std::cout << "  remainder = ";
+  for (auto&& x : result.unparsed()) std::cout << x << ' ';
+  std::cout << '\n';
+} catch (const char* err) {
+  std::cout << "caught exception: " << err << '\n';
 }

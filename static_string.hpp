@@ -32,8 +32,16 @@ struct static_string {
     return false;
   }
 
+  constexpr bool operator==(const std::string_view& other) const noexcept {
+    return std::string_view(*this) == other;
+  }
+
+  constexpr bool operator==(const char* other) const noexcept {
+    return std::string_view(*this) == other;
+  }
+
   constexpr operator std::string_view() const noexcept {
-    return std::string_view(m_str, N);
+    return std::string_view(m_str, N - 1);
   }
 
   // container interface

@@ -131,12 +131,16 @@ public:
       if constexpr (I == sizeof...(Args)) {
         return false;
       } else {
-        if (std::invoke(key, std::get<I>(m_data))) {
-          std::invoke(std::forward<Function>(func), std::get<I>(m_data));
-          return true;
-        } else {
-          return self(self, ic<I + 1>{});
+        using elem_t = std::tuple_element_t<I, std::tuple<Args...>>;
+        if constexpr (std::is_invocable_v<Compare, elem_t>
+                  and std::is_invocable_v<Function, elem_t>)
+        {
+          if (std::invoke(key, std::get<I>(m_data))) {
+            std::invoke(std::forward<Function>(func), std::get<I>(m_data));
+            return true;
+          }
         }
+        return self(self, ic<I + 1>{});
       }
     };
     return loop(loop, ic<0>{});
@@ -155,15 +159,25 @@ public:
       if constexpr (I == sizeof...(Args)) {
         return false;
       } else {
-        if (std::invoke(key, std::get<I>(m_data))) {
-          std::invoke(std::forward<Function>(func), std::get<I>(m_data));
-          return true;
-        } else {
-          return self(self, ic<I + 1>{});
+        using elem_t = std::tuple_element_t<I, std::tuple<Args...>>;
+        if constexpr (std::is_invocable_v<Compare, elem_t>
+                  and std::is_invocable_v<Function, elem_t>)
+        {
+          if (std::invoke(key, std::get<I>(m_data))) {
+            std::invoke(std::forward<Function>(func), std::get<I>(m_data));
+            return true;
+          }
         }
+        return self(self, ic<I + 1>{});
       }
     };
     return loop(loop, ic<0>{});
+  }
+
+  // Runtime check if the given key exists
+  template <typename Compare>
+  constexpr bool contains(Compare&& key) const {
+    return inspect(std::forward<Compare>(key), [](auto&&){});
   }
 
   // Convert this type set to use a different comparison function,
@@ -178,7 +192,7 @@ public:
   // Convert this type set to use a different comparison function,
   // mutating the elements as we go as appropriate,
   // verifying that such a translation is valid
-  template <template <typename, typename> typename NewIsEqual = IsEqual, 
+  template <template <typename, typename> typename NewIsEqual = IsEqual,
             typename Function>
   constexpr auto map(Function&& mapper) const {
     auto transformed = [this, &mapper]<std::size_t... Is>(std::index_sequence<Is...>) {
