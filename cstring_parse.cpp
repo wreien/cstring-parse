@@ -155,7 +155,6 @@ private:
   KArgs keys;
 
   // creates a result type set with all values default-constructed
-  // uses a key of both short/long names
   constexpr auto prepare_type_set() const {
     using namespace std::literals;
 
@@ -167,7 +166,7 @@ private:
       return decltype(std::declval<K>().parse(""sv)){};
     };
 
-    return make_type_set<shortarg_keyfn>(positional).template map<arg_keyfn>(map_keys)
+    return make_type_set<arg_keyfn>(positional).map(map_keys)
       .merge(flags.template map<arg_keyfn>(map_flags))
       .merge(keys.template map<arg_keyfn>(map_keys));
   }
@@ -271,9 +270,6 @@ template <static_string Name, static_string Type>
 struct positional_arg {
   static constexpr auto name = Name;
   static constexpr auto type = Type;
-  static constexpr auto short_name = static_string{""};
-
-  static_assert(short_name.size() <= 2, "short name can be maximum one character");
 
   auto parse(std::string_view s) const {
     using parse_type = decltype(parser<type>{}(s));

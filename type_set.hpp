@@ -178,7 +178,8 @@ public:
   // Convert this type set to use a different comparison function,
   // mutating the elements as we go as appropriate,
   // verifying that such a translation is valid
-  template <template <typename, typename> typename NewIsEqual, typename Function>
+  template <template <typename, typename> typename NewIsEqual = IsEqual, 
+            typename Function>
   constexpr auto map(Function&& mapper) const {
     auto transformed = [this, &mapper]<std::size_t... Is>(std::index_sequence<Is...>) {
       return std::tuple{ mapper(std::get<Is>(m_data))... };
