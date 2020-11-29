@@ -41,6 +41,15 @@ struct static_string {
     return std::string_view(*this) == other;
   }
 
+  constexpr bool operator==(char other) const noexcept {
+    if constexpr (N == 1)
+      return m_str[0] == other;
+    else if constexpr (N == 2)
+      return m_str[0] == other and m_str[1] == '\0';
+    else
+      return false;
+  }
+
   constexpr operator std::string_view() const noexcept {
     return std::string_view(m_str, N - 1);
   }
