@@ -140,11 +140,13 @@ private:
   std::vector<std::string_view> remaining;
 };
 
-template <typename PArgs, typename FArgs, typename KArgs>
+template <typename PArgs, typename Flags, typename Keys>
 class arg_parser {
 public:
-  constexpr arg_parser(PArgs&& positional, FArgs&& flags, KArgs&& keys)
-    : positional(std::move(positional))
+  constexpr arg_parser(
+    std::string_view help_str, PArgs&& positional, Flags&& flags, Keys&& keys)
+    : help_str(help_str)
+    , positional(std::move(positional))
     , flags(std::move(flags))
     , keys(std::move(keys))
   {}
@@ -154,9 +156,10 @@ public:
   }
 
 private:
+  std::string_view help_str;
   PArgs positional;
-  FArgs flags;
-  KArgs keys;
+  Flags flags;
+  Keys keys;
 
   // creates a result type set with all values default-constructed
   constexpr auto prepare_type_set() const {
@@ -202,6 +205,11 @@ private:
       return get_arg(++current_arg);
     }
 
+    void print_help() const {
+      // TODO: prettify help string somewhat?
+      std::cout << self->help_str;
+    }
+
     void parse_longname(std::string_view arg) {
       const auto equals = arg.find('=');
       bool has_equals = equals != std::string_view::npos;
@@ -218,8 +226,11 @@ private:
             x = t.parse(value);
           });
         });
-        if (not was_found)
-          throw "unknown key";  // TODO: proper exception management
+        if (not was_found) {
+          std::cout << "error: unknown flag: --" << name << "\n\n";  // TODO: proper exception management
+          print_help();
+          std::exit(1);
+        }
       }
     }
 
@@ -253,8 +264,11 @@ private:
           });
         });
 
-        if (not was_found)
-          throw "unknown key";
+        if (not was_found) {
+          std::cout << "error: unknown flag: -" << c << "\n\n";
+          print_help();
+          std::exit(1);
+        }
       }
     }
 
@@ -266,6 +280,10 @@ private:
         if (arg == "--"sv) {
           // we use the flag "--" to determine the end of non-positional args
           has_more_flags = false;
+        } else if (arg == "--help"sv or arg == "-h"sv) {
+          // special-case to print help and exit
+          print_help();
+          std::exit(0);
         } else if (arg.starts_with("--"sv)) {
           // a single long-name argument
           parse_longname(arg.substr(2));
@@ -355,7 +373,7 @@ public:
       std::tuple{}, type_set<shortarg_keyfn>{}, type_set<shortarg_keyfn>{});
     static_assert(decltype(flag.merge(key))::is_valid(),
                   "flags and keys cannot share identifiers or short names");
-    return arg_parser{ std::move(pos), std::move(flag), std::move(key) };
+    return arg_parser{ str, std::move(pos), std::move(flag), std::move(key) };
   }
 
 private:
@@ -419,7 +437,8 @@ constexpr auto operator ""_parse() {
 }
 
 int main(int argc, char** argv) try {
-  constexpr auto parser = R"(
+  constexpr auto parser = R"(arg_parse v0.1
+
 A demo application for my dodgy argparse generator.
 
 Usage:
